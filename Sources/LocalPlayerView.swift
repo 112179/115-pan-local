@@ -14,6 +14,8 @@ final class LocalSession: ObservableObject, PlayerDelegate {
     @Published var bufferPercent: Double = 0
     @Published var buffering = false
     @Published var format: String = ""
+    @Published var startupFraction: Double = 0
+    @Published var stageText: String = ""
 
     weak var player: AetherPlayerViewController?
     var scrubbing = false
@@ -34,6 +36,8 @@ final class LocalSession: ObservableObject, PlayerDelegate {
         buffering = snapshot.pausedForCache
         bufferPercent = snapshot.bufferPercent.isFinite ? snapshot.bufferPercent : 0
         format = snapshot.format
+        startupFraction = snapshot.startupFraction
+        stageText = snapshot.stageText
         speedBytes = snapshot.speedBytes.isFinite ? max(0, snapshot.speedBytes) : 0
     }
 
@@ -95,6 +99,7 @@ struct LocalPlayerView: View {
     @State private var speed: Double = 1.0
     @State private var scrubbing = false
     @State private var scrubValue: Double = 0
+    @State private var pendingSeek: Double?
 
     @State private var hudText: String?
     @State private var hudTask: Task<Void, Never>?
@@ -137,10 +142,21 @@ struct LocalPlayerView: View {
                 }
 
             if !session.ready && session.error == nil {
-                ProgressView()
-                    .controlSize(.large)
-                    .tint(.white)
+                PlayerLoadingView(progress: session.startupFraction, stage: session.stageText)
                     .allowsHitTesting(false)
+                    .transition(.opacity)
+            } else if session.buffering {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                    Text("缓冲中…")
+                        .font(.system(size: 12, weight: .medium))
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(.black.opacity(0.55), in: Capsule())
+                .allowsHitTesting(false)
             }
 
             if let message = session.error {
@@ -181,6 +197,11 @@ struct LocalPlayerView: View {
         .onChange(of: speed) { _, value in
             savedSpeed = value
         }
+        .onChange(of: session.position) { _, value in
+            if let target = pendingSeek, abs(value - target) < 2 {
+                pendingSeek = nil
+            }
+        }
         .onChange(of: session.ready) { _, ready in
             if ready, !resumed {
                 resumed = true
@@ -219,7 +240,17 @@ struct LocalPlayerView: View {
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
 
-                HStack(spacing: 6) {
+                HStack(spacing: 8) {
+                    if session.speedBytes > 0 {
+                        HStack(spacing: 2) {
+                            Image(systemName: "arrow.down")
+                                .font(.system(size: 7, weight: .heavy))
+                            Text(NetSpeedText.text(session.speedBytes))
+                                .font(.system(size: 9, weight: .semibold))
+                                .monospacedDigit()
+                        }
+                        .foregroundStyle(.white.opacity(0.8))
+                    }
                     if !session.format.isEmpty {
                         Text(session.format)
                             .font(.system(size: 9, weight: .heavy))
@@ -229,11 +260,7 @@ struct LocalPlayerView: View {
                             .background(.white.opacity(0.18), in: Capsule())
                             .overlay(Capsule().stroke(.white.opacity(0.35), lineWidth: 0.5))
                     }
-                    if session.buffering {
-                        Text("缓冲中…")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.white.opacity(0.7))
-                    }
+
                 }
             }
 
@@ -297,14 +324,14 @@ struct LocalPlayerView: View {
 
     private var bottomBar: some View {
         VStack(spacing: 12) {
-            PlayerScrubBar(position: scrubDisplay,
+            PlayerScrubBar(position: displayPosition,
                            duration: max(session.duration, 0.01),
                            buffered: session.bufferPercent,
                            onEditing: handleScrub)
                 .padding(.horizontal, 2)
 
             HStack {
-                Text(PlayerTime.text(scrubDisplay))
+                Text(PlayerTime.text(displayPosition))
                     .font(.system(size: 11, weight: .medium))
                     .monospacedDigit()
                 Spacer()
@@ -380,21 +407,33 @@ struct LocalPlayerView: View {
         )
     }
 
-    private var scrubDisplay: Double {
-        scrubbing ? scrubValue : session.position
+    private var displayPosition: Double {
+        if let pendingSeek { return pendingSeek }
+        return session.position
     }
 
-    private func handleScrub(_ editing: Bool, _ value: Double) {
-        scrubValue = value
-        if editing {
+    private func handleScrub(_ begin: Bool, _ value: Double) {
+        if begin {
             scrubbing = true
             session.scrubbing = true
+            hideTask?.cancel()
         } else {
             scrubbing = false
             session.scrubbing = false
+            pendingSeek = value
             session.player?.seek(to: value)
+            clearPendingLater(value)
+            scheduleHide()
         }
-        scheduleHide()
+    }
+
+    private func clearPendingLater(_ target: Double) {
+        Task {
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if let pending = pendingSeek, abs(pending - target) < 0.01 {
+                pendingSeek = nil
+            }
+        }
     }
 
     private func closePlayer() {
@@ -428,6 +467,7 @@ struct LocalPlayerView: View {
         DragGesture(minimumDistance: 22)
             .onChanged { value in
                 guard session.duration > 1 else { return }
+                if showControls, value.startLocation.y > size.height - 170 { return }
                 if dragBase == nil {
                     guard abs(value.translation.width) > abs(value.translation.height) * 1.5 else { return }
                     dragBase = session.position
@@ -561,7 +601,8 @@ enum NetSpeedText {
 }
 
 
-/// 带缓冲进度的自定义进度条（比系统 Slider 更贴近播放器习惯）
+/// 带缓冲进度的自定义进度条：拖动状态只在本视图内更新，父视图只在开始/结束时收到回调，
+/// 避免每一帧都重绘整个播放页（这是之前拖动卡顿的主因）。
 struct PlayerScrubBar: View {
     var position: Double
     var duration: Double
@@ -571,38 +612,59 @@ struct PlayerScrubBar: View {
     @State private var dragging = false
     @State private var dragValue: Double = 0
 
+    private var shownValue: Double { dragging ? dragValue : position }
+
     var body: some View {
         GeometryReader { geo in
-            let width = max(geo.size.width, 1)
-            let shown = dragging ? dragValue : position
-            let fraction = CGFloat(duration > 0 ? min(max(shown / duration, 0), 1) : 0)
+            let width = max(geo.size.width, 32)
+            let total = max(duration, 0.01)
+            let fraction = CGFloat(min(max(shownValue / total, 0), 1))
             let bufferFraction = CGFloat(min(max(buffered / 100, 0), 1))
+            let knobX = width * fraction
 
             ZStack(alignment: .leading) {
                 Capsule()
-                    .fill(.white.opacity(0.18))
-                    .frame(height: 4)
+                    .fill(.white.opacity(0.16))
+                    .frame(height: dragging ? 6 : 4)
 
                 Capsule()
-                    .fill(.white.opacity(0.32))
-                    .frame(width: width * bufferFraction, height: 4)
+                    .fill(.white.opacity(0.30))
+                    .frame(width: width * bufferFraction, height: dragging ? 6 : 4)
 
                 Capsule()
                     .fill(.white)
-                    .frame(width: width * fraction, height: 4)
+                    .frame(width: knobX, height: dragging ? 6 : 4)
 
                 Circle()
                     .fill(.white)
-                    .frame(width: dragging ? 16 : 11, height: dragging ? 16 : 11)
-                    .shadow(color: .black.opacity(0.35), radius: 2, y: 1)
-                    .offset(x: width * fraction - (dragging ? 8 : 5.5))
+                    .frame(width: dragging ? 18 : 12, height: dragging ? 18 : 12)
+                    .shadow(color: .black.opacity(0.4), radius: 3, y: 1)
+                    .offset(x: knobX - (dragging ? 9 : 6))
+
+                if dragging {
+                    VStack(spacing: 1) {
+                        Text(PlayerTime.text(shownValue))
+                            .font(.system(size: 13, weight: .semibold))
+                            .monospacedDigit()
+                        Text(String(format: "%+.0f 秒", dragValue - position))
+                            .font(.system(size: 9, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundStyle(.white.opacity(0.65))
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(.black.opacity(0.85), in: Capsule())
+                    .fixedSize()
+                    .offset(x: min(max(knobX - 34, 0), width - 68), y: -44)
+                    .allowsHitTesting(false)
+                }
             }
-            .frame(height: 30)
+            .frame(height: 44)
             .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .local)
                     .onChanged { value in
-                        let target = valueAt(value.location.x, width)
+                        let target = valueAt(value.location.x, width, total)
                         if !dragging {
                             dragging = true
                             onEditing(true, target)
@@ -610,19 +672,77 @@ struct PlayerScrubBar: View {
                         dragValue = target
                     }
                     .onEnded { value in
-                        let target = valueAt(value.location.x, width)
+                        let target = valueAt(value.location.x, width, total)
                         dragValue = target
                         dragging = false
                         onEditing(false, target)
                     }
             )
-            .animation(.easeOut(duration: 0.12), value: dragging)
         }
-        .frame(height: 30)
+        .frame(height: 44)
+        .padding(.horizontal, -6)
     }
 
-    private func valueAt(_ x: CGFloat, _ width: CGFloat) -> Double {
+    private func valueAt(_ x: CGFloat, _ width: CGFloat, _ total: Double) -> Double {
         let ratio = min(max(x / width, 0), 1)
-        return Double(ratio) * duration
+        return Double(ratio) * total
+    }
+}
+
+/// 首帧加载动画：进度环 + 脉动的播放图标 + 引擎给的阶段文案
+struct PlayerLoadingView: View {
+    var progress: Double
+    var stage: String
+
+    @State private var pulse = false
+    @State private var appeared = false
+
+    private var clamped: Double {
+        min(max(progress, 0), 1)
+    }
+
+    var body: some View {
+        VStack(spacing: 18) {
+            ZStack {
+                Circle()
+                    .stroke(.white.opacity(0.12), lineWidth: 3)
+
+                Circle()
+                    .trim(from: 0, to: appeared ? max(0.04, clamped) : 0.04)
+                    .stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.easeOut(duration: 0.35), value: clamped)
+
+                Circle()
+                    .fill(.white.opacity(0.06))
+                    .scaleEffect(pulse ? 1.0 : 0.82)
+                    .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true), value: pulse)
+
+                Image(systemName: "play.fill")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .offset(x: 1)
+                    .scaleEffect(pulse ? 1.06 : 0.94)
+                    .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true), value: pulse)
+            }
+            .frame(width: 68, height: 68)
+
+            VStack(spacing: 5) {
+                Text(stage.isEmpty ? "加载中…" : stage)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.9))
+
+                Text("\(Int(clamped * 100))%")
+                    .font(.system(size: 11, weight: .semibold))
+                    .monospacedDigit()
+                    .foregroundStyle(.white.opacity(0.45))
+            }
+        }
+        .padding(30)
+        .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 24))
+        .onAppear {
+            pulse = true
+            appeared = true
+        }
     }
 }

@@ -13,6 +13,8 @@ struct PlaybackSnapshot {
     var cacheSeconds: Double = 0
     var pausedForCache: Bool = false
     var format: String = ""
+    var startupFraction: Double = 0
+    var stageText: String = ""
 }
 
 struct MPVTrack: Identifiable, Hashable {
@@ -282,17 +284,38 @@ final class AetherPlayerViewController: UIViewController {
         let buffered = Double(engine.clock.bufferedPosition)
         let percent = duration > 0 ? min(100, max(0, buffered / duration * 100)) : 0
 
+        let throughput = engine.liveTelemetry?.networkThroughputMbps ?? 0
+        let progress = engine.startupProgress
+
         let snapshot = PlaybackSnapshot(
             position: currentSeconds,
             duration: duration,
             paused: paused,
-            speedBytes: 0,
+            speedBytes: max(0, throughput) * 125_000,
             bufferPercent: percent,
             cacheSeconds: max(0, buffered - currentSeconds),
             pausedForCache: engine.isBuffering,
-            format: formatLabel(engine.videoFormat)
+            format: formatLabel(engine.videoFormat),
+            startupFraction: progress?.fraction ?? 0,
+            stageText: stageLabel(progress?.stage)
         )
         delegate?.playback(self, snapshot: snapshot)
+    }
+
+    private func stageLabel(_ stage: StartupStage?) -> String {
+        guard let stage else { return "准备中…" }
+        switch stage {
+        case .connecting: return "连接服务器"
+        case .openingContainer: return "读取文件信息"
+        case .analyzingStreams: return "分析音视频流"
+        case .preparingDisplay: return "准备显示"
+        case .selectingRoute: return "选择播放通路"
+        case .buildingSession: return "建立播放会话"
+        case .preparingPlayback: return "准备起播"
+        case .awaitingFirstFrame: return "等待首帧"
+        case .presenting: return "即将开始"
+        default: return "加载中…"
+        }
     }
 
     private func formatLabel(_ format: VideoFormat) -> String {
