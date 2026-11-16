@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 
+@MainActor
 final class LocalSession: ObservableObject, PlayerDelegate {
     @Published var position: Double = 0
     @Published var duration: Double = 0
@@ -10,55 +11,53 @@ final class LocalSession: ObservableObject, PlayerDelegate {
     @Published var speedBytes: Double = 0
     @Published var tracks: [MPVTrack] = []
     @Published var ended = false
+    @Published var bufferPercent: Double = 0
+    @Published var buffering = false
 
-    weak var player: VLCPlayerViewController?
+    weak var player: AetherPlayerViewController?
     var scrubbing = false
 
-    func playbackReady(_ player: VLCPlayerViewController) {
-        DispatchQueue.main.async {
-            self.ready = true
-            self.error = nil
+    func playbackReady(_ player: AetherPlayerViewController) {
+        ready = true
+        error = nil
+    }
+
+    func playback(_ player: AetherPlayerViewController, snapshot: PlaybackSnapshot) {
+        if snapshot.duration.isFinite, snapshot.duration > 0 {
+            duration = snapshot.duration
         }
-    }
-
-    func playback(_ player: VLCPlayerViewController, snapshot: PlaybackSnapshot) {
-        DispatchQueue.main.async {
-            if snapshot.duration.isFinite, snapshot.duration > 0 {
-                self.duration = snapshot.duration
-            }
-            if !self.scrubbing, snapshot.position.isFinite {
-                self.position = max(0, snapshot.position)
-            }
-            self.paused = snapshot.paused
-            self.speedBytes = snapshot.speedBytes.isFinite ? max(0, snapshot.speedBytes) : 0
+        if !scrubbing, snapshot.position.isFinite {
+            position = max(0, snapshot.position)
         }
+        paused = snapshot.paused
+        buffering = snapshot.pausedForCache
+        bufferPercent = snapshot.bufferPercent.isFinite ? snapshot.bufferPercent : 0
+        speedBytes = snapshot.speedBytes.isFinite ? max(0, snapshot.speedBytes) : 0
     }
 
-    func playback(_ player: VLCPlayerViewController, tracks: [MPVTrack]) {
-        DispatchQueue.main.async { self.tracks = tracks }
+    func playback(_ player: AetherPlayerViewController, tracks: [MPVTrack]) {
+        self.tracks = tracks
     }
 
-    func playbackEnded(_ player: VLCPlayerViewController) {
-        DispatchQueue.main.async { self.ended = true }
+    func playbackEnded(_ player: AetherPlayerViewController) {
+        ended = true
     }
 
-    func playback(_ player: VLCPlayerViewController, failed message: String) {
-        DispatchQueue.main.async {
-            self.error = message
-            self.ready = false
-        }
+    func playback(_ player: AetherPlayerViewController, failed message: String) {
+        error = message
+        ready = false
     }
 }
 
-struct VLCView: UIViewControllerRepresentable {
+struct PlayerSurfaceView: UIViewControllerRepresentable {
     @ObservedObject var session: LocalSession
     let url: URL
     let userAgent: String
     let caching: Int
     let hardware: Bool
 
-    func makeUIViewController(context: Context) -> VLCPlayerViewController {
-        let controller = VLCPlayerViewController()
+    func makeUIViewController(context: Context) -> AetherPlayerViewController {
+        let controller = AetherPlayerViewController()
         controller.delegate = session
         controller.userAgent = userAgent
         controller.networkCaching = caching
@@ -68,7 +67,7 @@ struct VLCView: UIViewControllerRepresentable {
         return controller
     }
 
-    func updateUIViewController(_ controller: VLCPlayerViewController, context: Context) {
+    func updateUIViewController(_ controller: AetherPlayerViewController, context: Context) {
         session.player = controller
         controller.networkCaching = caching
         controller.hardwareDecode = hardware
@@ -116,7 +115,7 @@ struct LocalPlayerView: View {
             ZStack {
                 Color.black.ignoresSafeArea()
 
-                VLCView(session: session,
+                PlayerSurfaceView(session: session,
                         url: url,
                         userAgent: API115.userAgent,
                         caching: caching,
