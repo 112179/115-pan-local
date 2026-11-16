@@ -12,6 +12,7 @@ struct PlaybackSnapshot {
     var bufferPercent: Double = 0
     var cacheSeconds: Double = 0
     var pausedForCache: Bool = false
+    var format: String = ""
 }
 
 struct MPVTrack: Identifiable, Hashable {
@@ -62,7 +63,7 @@ final class AetherPlayerViewController: UIViewController {
     var hardwareDecode: Bool = true
     private(set) var loadedURL: URL?
 
-    private let engine: AetherEngine? = PlaybackEngine.shared
+    private var engine: AetherEngine? { PlaybackEngine.shared }
     private let surface = AetherPlayerView()
     private let subtitleOverlay = SubtitleOverlayView()
     private var bag = Set<AnyCancellable>()
@@ -107,8 +108,10 @@ final class AetherPlayerViewController: UIViewController {
         subtitleOverlay.frame = view.bounds
     }
 
-    deinit {
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
         timer?.invalidate()
+        timer = nil
     }
 
     private func activateAudioSession() {
@@ -182,8 +185,6 @@ final class AetherPlayerViewController: UIViewController {
             // 115 直链要求 UA 与解析时一致
             headers["User-Agent"] = ua
         }
-        headers["Referer"] = "https://115.com/"
-
         let options = LoadOptions(httpHeaders: headers)
 
         Task { @MainActor in
@@ -278,7 +279,7 @@ final class AetherPlayerViewController: UIViewController {
         default: paused = true
         }
         let duration = durationSeconds
-        let buffered = engine.clock.bufferedPosition
+        let buffered = Double(engine.clock.bufferedPosition)
         let percent = duration > 0 ? min(100, max(0, buffered / duration * 100)) : 0
 
         let snapshot = PlaybackSnapshot(
@@ -288,9 +289,20 @@ final class AetherPlayerViewController: UIViewController {
             speedBytes: 0,
             bufferPercent: percent,
             cacheSeconds: max(0, buffered - currentSeconds),
-            pausedForCache: engine.isBuffering
+            pausedForCache: engine.isBuffering,
+            format: formatLabel(engine.videoFormat)
         )
         delegate?.playback(self, snapshot: snapshot)
+    }
+
+    private func formatLabel(_ format: VideoFormat) -> String {
+        switch format {
+        case .dolbyVision: return "DOLBY VISION"
+        case .hdr10: return "HDR10"
+        case .hdr10Plus: return "HDR10+"
+        case .hlg: return "HLG"
+        default: return ""
+        }
     }
 
     private func startTimer() {
