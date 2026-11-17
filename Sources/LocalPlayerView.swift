@@ -1,7 +1,6 @@
 import SwiftUI
 import UIKit
 
-@MainActor
 final class LocalSession: ObservableObject, PlayerDelegate {
     @Published var position: Double = 0
     @Published var duration: Double = 0
@@ -11,59 +10,55 @@ final class LocalSession: ObservableObject, PlayerDelegate {
     @Published var speedBytes: Double = 0
     @Published var tracks: [MPVTrack] = []
     @Published var ended = false
-    @Published var bufferPercent: Double = 0
-    @Published var buffering = false
-    @Published var format: String = ""
-    @Published var startupFraction: Double = 0
-    @Published var stageText: String = ""
 
-    weak var player: AetherPlayerViewController?
+    weak var player: VLCPlayerViewController?
     var scrubbing = false
 
-    func playbackReady(_ player: AetherPlayerViewController) {
-        ready = true
-        error = nil
-    }
-
-    func playback(_ player: AetherPlayerViewController, snapshot: PlaybackSnapshot) {
-        if snapshot.duration.isFinite, snapshot.duration > 0 {
-            duration = snapshot.duration
+    func playbackReady(_ player: VLCPlayerViewController) {
+        DispatchQueue.main.async {
+            self.ready = true
+            self.error = nil
         }
-        if !scrubbing, snapshot.position.isFinite {
-            position = max(0, snapshot.position)
+    }
+
+    func playback(_ player: VLCPlayerViewController, snapshot: PlaybackSnapshot) {
+        DispatchQueue.main.async {
+            if snapshot.duration.isFinite, snapshot.duration > 0 {
+                self.duration = snapshot.duration
+            }
+            if !self.scrubbing, snapshot.position.isFinite {
+                self.position = max(0, snapshot.position)
+            }
+            self.paused = snapshot.paused
+            self.speedBytes = snapshot.speedBytes.isFinite ? max(0, snapshot.speedBytes) : 0
         }
-        paused = snapshot.paused
-        buffering = snapshot.pausedForCache
-        bufferPercent = snapshot.bufferPercent.isFinite ? snapshot.bufferPercent : 0
-        format = snapshot.format
-        startupFraction = snapshot.startupFraction
-        stageText = snapshot.stageText
-        speedBytes = snapshot.speedBytes.isFinite ? max(0, snapshot.speedBytes) : 0
     }
 
-    func playback(_ player: AetherPlayerViewController, tracks: [MPVTrack]) {
-        self.tracks = tracks
+    func playback(_ player: VLCPlayerViewController, tracks: [MPVTrack]) {
+        DispatchQueue.main.async { self.tracks = tracks }
     }
 
-    func playbackEnded(_ player: AetherPlayerViewController) {
-        ended = true
+    func playbackEnded(_ player: VLCPlayerViewController) {
+        DispatchQueue.main.async { self.ended = true }
     }
 
-    func playback(_ player: AetherPlayerViewController, failed message: String) {
-        error = message
-        ready = false
+    func playback(_ player: VLCPlayerViewController, failed message: String) {
+        DispatchQueue.main.async {
+            self.error = message
+            self.ready = false
+        }
     }
 }
 
-struct PlayerSurfaceView: UIViewControllerRepresentable {
+struct VLCView: UIViewControllerRepresentable {
     @ObservedObject var session: LocalSession
     let url: URL
     let userAgent: String
     let caching: Int
     let hardware: Bool
 
-    func makeUIViewController(context: Context) -> AetherPlayerViewController {
-        let controller = AetherPlayerViewController()
+    func makeUIViewController(context: Context) -> VLCPlayerViewController {
+        let controller = VLCPlayerViewController()
         controller.delegate = session
         controller.userAgent = userAgent
         controller.networkCaching = caching
@@ -73,7 +68,7 @@ struct PlayerSurfaceView: UIViewControllerRepresentable {
         return controller
     }
 
-    func updateUIViewController(_ controller: AetherPlayerViewController, context: Context) {
+    func updateUIViewController(_ controller: VLCPlayerViewController, context: Context) {
         session.player = controller
         controller.networkCaching = caching
         controller.hardwareDecode = hardware
@@ -99,7 +94,6 @@ struct LocalPlayerView: View {
     @State private var speed: Double = 1.0
     @State private var scrubbing = false
     @State private var scrubValue: Double = 0
-    @State private var pendingSeek: Double?
 
     @State private var hudText: String?
     @State private var hudTask: Task<Void, Never>?
@@ -122,7 +116,7 @@ struct LocalPlayerView: View {
             ZStack {
                 Color.black.ignoresSafeArea()
 
-                PlayerSurfaceView(session: session,
+                VLCView(session: session,
                         url: url,
                         userAgent: API115.userAgent,
                         caching: caching,
@@ -142,21 +136,10 @@ struct LocalPlayerView: View {
                 }
 
             if !session.ready && session.error == nil {
-                PlayerLoadingView(progress: session.startupFraction, stage: session.stageText)
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.white)
                     .allowsHitTesting(false)
-                    .transition(.opacity)
-            } else if session.buffering {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                        .tint(.white)
-                    Text("缓冲中…")
-                        .font(.system(size: 12, weight: .medium))
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
-                .background(.black.opacity(0.55), in: Capsule())
-                .allowsHitTesting(false)
             }
 
             if let message = session.error {
@@ -197,11 +180,6 @@ struct LocalPlayerView: View {
         .onChange(of: speed) { _, value in
             savedSpeed = value
         }
-        .onChange(of: session.position) { _, value in
-            if let target = pendingSeek, abs(value - target) < 2 {
-                pendingSeek = nil
-            }
-        }
         .onChange(of: session.ready) { _, ready in
             if ready, !resumed {
                 resumed = true
@@ -219,230 +197,159 @@ struct LocalPlayerView: View {
 
     private var controls: some View {
         VStack(spacing: 0) {
-            topBar
-            Spacer(minLength: 0)
-            bottomBar
-        }
-        .foregroundStyle(.white)
-    }
+            HStack(spacing: 10) {
+                Button {
+                    if PlayerOrientation.isLandscape {
+                        PlayerOrientation.apply(.portrait, force: true)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { dismiss() }
+                    } else {
+                        dismiss()
+                    }
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 15, weight: .bold))
+                        .padding(9)
+                }
 
-    private var topBar: some View {
-        HStack(spacing: 12) {
-            Button { closePlayer() } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 13, weight: .bold))
-                    .frame(width: 34, height: 34)
-                    .background(.ultraThinMaterial, in: Circle())
-            }
-
-            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.footnote)
                     .lineLimit(1)
 
-                HStack(spacing: 8) {
-                    if session.speedBytes > 0 {
-                        HStack(spacing: 2) {
-                            Image(systemName: "arrow.down")
-                                .font(.system(size: 7, weight: .heavy))
-                            Text(NetSpeedText.text(session.speedBytes))
-                                .font(.system(size: 9, weight: .semibold))
-                                .monospacedDigit()
-                        }
-                        .foregroundStyle(.white.opacity(0.8))
-                    }
-                    if !session.format.isEmpty {
-                        Text(session.format)
-                            .font(.system(size: 9, weight: .heavy))
-                            .tracking(0.6)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(.white.opacity(0.18), in: Capsule())
-                            .overlay(Capsule().stroke(.white.opacity(0.35), lineWidth: 0.5))
-                    }
-
-                }
-            }
-
-            Spacer(minLength: 0)
-
-            Menu { trackMenu } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 15, weight: .semibold))
-                    .frame(width: 34, height: 34)
-                    .background(.ultraThinMaterial, in: Circle())
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .padding(.bottom, 24)
-        .background(
-            LinearGradient(colors: [.black.opacity(0.85), .black.opacity(0.4), .clear],
-                           startPoint: .top, endPoint: .bottom)
-        )
-    }
-
-    @ViewBuilder
-    private var trackMenu: some View {
-        if !audioTracks.isEmpty {
-            Section("音轨") {
-                ForEach(audioTracks) { track in
-                    Button {
-                        session.player?.selectTrack(track)
-                    } label: {
-                        Label(track.displayName, systemImage: track.selected ? "checkmark" : "waveform")
-                    }
-                }
-            }
-        }
-
-        if !subTracks.isEmpty {
-            Section("字幕") {
-                Button {
-                    session.player?.disableSubtitles()
-                } label: {
-                    Label("关闭字幕", systemImage: "captions.bubble")
-                }
-                ForEach(subTracks) { track in
-                    Button {
-                        session.player?.selectTrack(track)
-                    } label: {
-                        Label(track.displayName, systemImage: track.selected ? "checkmark" : "captions.bubble")
-                    }
-                }
-            }
-        }
-
-        Section("画面") {
-            Button {
-                PlayerOrientation.toggle()
-            } label: {
-                Label(PlayerOrientation.isLandscape ? "竖屏" : "横屏", systemImage: "arrow.up.left.and.arrow.down.right")
-            }
-        }
-    }
-
-    private var bottomBar: some View {
-        VStack(spacing: 12) {
-            PlayerScrubBar(position: displayPosition,
-                           duration: max(session.duration, 0.01),
-                           buffered: session.bufferPercent,
-                           onEditing: handleScrub)
-                .padding(.horizontal, 2)
-
-            HStack {
-                Text(PlayerTime.text(displayPosition))
-                    .font(.system(size: 11, weight: .medium))
-                    .monospacedDigit()
                 Spacer()
-                Text(PlayerTime.text(session.duration))
-                    .font(.system(size: 11, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundStyle(.white.opacity(0.6))
-            }
-            .padding(.horizontal, 6)
 
-            HStack(spacing: 0) {
+                if session.speedBytes > 0 {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 8, weight: .bold))
+                        Text(NetSpeedText.text(session.speedBytes))
+                            .font(.caption2)
+                            .monospacedDigit()
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.black.opacity(0.35), in: Capsule())
+                }
+
                 Menu {
-                    ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { value in
-                        Button {
-                            speed = value
-                            session.player?.setSpeed(value)
-                        } label: {
-                            Label(String(format: "%g×", value),
-                                  systemImage: abs(speed - value) < 0.01 ? "checkmark" : "gauge")
+                    if !audioTracks.isEmpty {
+                        Section("音轨") {
+                            ForEach(audioTracks) { track in
+                                Button {
+                                    session.player?.selectTrack(track)
+                                } label: {
+                                    HStack {
+                                        Text(track.displayName)
+                                        if track.selected { Image(systemName: "checkmark") }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if !subTracks.isEmpty {
+                        Section("字幕") {
+                            Button("关闭字幕") { session.player?.disableSubtitles() }
+                            ForEach(subTracks) { track in
+                                Button {
+                                    session.player?.selectTrack(track)
+                                } label: {
+                                    HStack {
+                                        Text(track.displayName)
+                                        if track.selected { Image(systemName: "checkmark") }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Section("播放速度") {
+                        ForEach([0.5, 0.75, 1.0, 1.25, 1.5, 2.0], id: \.self) { value in
+                            Button {
+                                speed = value
+                                session.player?.setSpeed(value)
+                            } label: {
+                                HStack {
+                                    Text(String(format: "%gx", value))
+                                    if abs(speed - value) < 0.01 { Image(systemName: "checkmark") }
+                                }
+                            }
                         }
                     }
                 } label: {
-                    Text(String(format: "%g×", speed))
-                        .font(.system(size: 13, weight: .semibold))
-                        .frame(width: 58, height: 32)
-                        .background(.ultraThinMaterial, in: Capsule())
-                }
-
-                Spacer(minLength: 0)
-
-                Button { session.player?.seek(by: -15) } label: {
-                    Image(systemName: "gobackward.15")
-                        .font(.system(size: 25, weight: .regular))
-                        .frame(width: 48, height: 48)
-                }
-
-                Spacer(minLength: 0)
-
-                Button { session.player?.togglePause() } label: {
-                    Image(systemName: session.paused ? "play.fill" : "pause.fill")
-                        .font(.system(size: 25, weight: .semibold))
-                        .offset(x: session.paused ? 2 : 0)
-                        .frame(width: 62, height: 62)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 0.5))
-                }
-
-                Spacer(minLength: 0)
-
-                Button { session.player?.seek(by: 15) } label: {
-                    Image(systemName: "goforward.15")
-                        .font(.system(size: 25, weight: .regular))
-                        .frame(width: 48, height: 48)
-                }
-
-                Spacer(minLength: 0)
-
-                Button { PlayerOrientation.toggle() } label: {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 14, weight: .semibold))
-                        .frame(width: 58, height: 32)
-                        .background(.ultraThinMaterial, in: Capsule())
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 19))
+                        .padding(8)
                 }
             }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 18)
-        .padding(.top, 24)
-        .padding(.bottom, 26)
-        .background(
-            LinearGradient(colors: [.clear, .black.opacity(0.55), .black.opacity(0.88)],
-                           startPoint: .top, endPoint: .bottom)
-        )
-    }
+            .padding(.horizontal, 8)
+            .padding(.top, 4)
+            .padding(.bottom, 4)
+            .background(Color.black.opacity(0.32))
 
-    private var displayPosition: Double {
-        if let pendingSeek { return pendingSeek }
-        return session.position
-    }
+            Spacer()
 
-    private func handleScrub(_ begin: Bool, _ value: Double) {
-        if begin {
-            scrubbing = true
-            session.scrubbing = true
-            hideTask?.cancel()
-        } else {
-            scrubbing = false
-            session.scrubbing = false
-            pendingSeek = value
-            session.player?.seek(to: value)
-            clearPendingLater(value)
-            scheduleHide()
-        }
-    }
+            VStack(spacing: 8) {
+                Slider(value: sliderBinding,
+                       in: 0...max(session.duration, 1),
+                       onEditingChanged: { editing in
+                           if editing {
+                               scrubValue = session.position
+                               scrubbing = true
+                               session.scrubbing = true
+                           } else {
+                               scrubbing = false
+                               session.scrubbing = false
+                               session.player?.seek(to: scrubValue)
+                           }
+                       })
+                .tint(.white)
 
-    private func clearPendingLater(_ target: Double) {
-        Task {
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
-            if let pending = pendingSeek, abs(pending - target) < 0.01 {
-                pendingSeek = nil
+                HStack(spacing: 18) {
+                    Text(PlayerTime.text(session.position))
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .frame(width: 52, alignment: .leading)
+
+                    Spacer()
+
+                    Button { session.player?.seek(by: -15) } label: {
+                        Image(systemName: "gobackward.15").font(.title3)
+                    }
+
+                    Button { session.player?.togglePause() } label: {
+                        Image(systemName: session.paused ? "play.fill" : "pause.fill")
+                            .font(.system(size: 27))
+                            .frame(width: 46)
+                    }
+
+                    Button { session.player?.seek(by: 15) } label: {
+                        Image(systemName: "goforward.15").font(.title3)
+                    }
+
+                    Spacer()
+
+                    Text(PlayerTime.text(session.duration))
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .frame(width: 52, alignment: .trailing)
+                }
+
+                HStack {
+                    Button {
+                        PlayerOrientation.toggle()
+                    } label: {
+                        Label("横屏/竖屏", systemImage: "arrow.up.left.and.arrow.down.right")
+                            .font(.caption)
+                    }
+                    Spacer()
+                }
             }
+            .padding(.horizontal, 18)
+            .padding(.top, 10)
+            .padding(.bottom, 22)
+            .background(Color.black.opacity(0.42))
         }
-    }
-
-    private func closePlayer() {
-        if PlayerOrientation.isLandscape {
-            PlayerOrientation.apply(.portrait, force: true)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { dismiss() }
-        } else {
-            dismiss()
-        }
+        .foregroundStyle(.white)
     }
 
     private func gestures(size: CGSize) -> some View {
@@ -467,7 +374,6 @@ struct LocalPlayerView: View {
         DragGesture(minimumDistance: 22)
             .onChanged { value in
                 guard session.duration > 1 else { return }
-                if showControls, value.startLocation.y > size.height - 170 { return }
                 if dragBase == nil {
                     guard abs(value.translation.width) > abs(value.translation.height) * 1.5 else { return }
                     dragBase = session.position
@@ -560,6 +466,11 @@ struct LocalPlayerView: View {
         }
     }
 
+    private var sliderBinding: Binding<Double> {
+        Binding(get: { scrubbing ? scrubValue : session.position },
+                set: { scrubValue = $0 })
+    }
+
     private func toggleControls() {
         withAnimation(.easeInOut(duration: 0.18)) {
             showControls.toggle()
@@ -597,152 +508,5 @@ enum NetSpeedText {
         let kb = bytes / 1024
         if kb >= 1024 { return String(format: "%.1f MB/s", kb / 1024) }
         return String(format: "%.0f KB/s", kb)
-    }
-}
-
-
-/// 带缓冲进度的自定义进度条：拖动状态只在本视图内更新，父视图只在开始/结束时收到回调，
-/// 避免每一帧都重绘整个播放页（这是之前拖动卡顿的主因）。
-struct PlayerScrubBar: View {
-    var position: Double
-    var duration: Double
-    var buffered: Double        // 0...100
-    var onEditing: (Bool, Double) -> Void
-
-    @State private var dragging = false
-    @State private var dragValue: Double = 0
-
-    private var shownValue: Double { dragging ? dragValue : position }
-
-    var body: some View {
-        GeometryReader { geo in
-            let width = max(geo.size.width, 32)
-            let total = max(duration, 0.01)
-            let fraction = CGFloat(min(max(shownValue / total, 0), 1))
-            let bufferFraction = CGFloat(min(max(buffered / 100, 0), 1))
-            let knobX = width * fraction
-
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(.white.opacity(0.16))
-                    .frame(height: dragging ? 6 : 4)
-
-                Capsule()
-                    .fill(.white.opacity(0.30))
-                    .frame(width: width * bufferFraction, height: dragging ? 6 : 4)
-
-                Capsule()
-                    .fill(.white)
-                    .frame(width: knobX, height: dragging ? 6 : 4)
-
-                Circle()
-                    .fill(.white)
-                    .frame(width: dragging ? 18 : 12, height: dragging ? 18 : 12)
-                    .shadow(color: .black.opacity(0.4), radius: 3, y: 1)
-                    .offset(x: knobX - (dragging ? 9 : 6))
-
-                if dragging {
-                    VStack(spacing: 1) {
-                        Text(PlayerTime.text(shownValue))
-                            .font(.system(size: 13, weight: .semibold))
-                            .monospacedDigit()
-                        Text(String(format: "%+.0f 秒", dragValue - position))
-                            .font(.system(size: 9, weight: .medium))
-                            .monospacedDigit()
-                            .foregroundStyle(.white.opacity(0.65))
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(.black.opacity(0.85), in: Capsule())
-                    .fixedSize()
-                    .offset(x: min(max(knobX - 34, 0), width - 68), y: -44)
-                    .allowsHitTesting(false)
-                }
-            }
-            .frame(height: 44)
-            .contentShape(Rectangle())
-            .highPriorityGesture(
-                DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                    .onChanged { value in
-                        let target = valueAt(value.location.x, width, total)
-                        if !dragging {
-                            dragging = true
-                            onEditing(true, target)
-                        }
-                        dragValue = target
-                    }
-                    .onEnded { value in
-                        let target = valueAt(value.location.x, width, total)
-                        dragValue = target
-                        dragging = false
-                        onEditing(false, target)
-                    }
-            )
-        }
-        .frame(height: 44)
-        .padding(.horizontal, -6)
-    }
-
-    private func valueAt(_ x: CGFloat, _ width: CGFloat, _ total: Double) -> Double {
-        let ratio = min(max(x / width, 0), 1)
-        return Double(ratio) * total
-    }
-}
-
-/// 首帧加载动画：进度环 + 脉动的播放图标 + 引擎给的阶段文案
-struct PlayerLoadingView: View {
-    var progress: Double
-    var stage: String
-
-    @State private var pulse = false
-    @State private var appeared = false
-
-    private var clamped: Double {
-        min(max(progress, 0), 1)
-    }
-
-    var body: some View {
-        VStack(spacing: 18) {
-            ZStack {
-                Circle()
-                    .stroke(.white.opacity(0.12), lineWidth: 3)
-
-                Circle()
-                    .trim(from: 0, to: appeared ? max(0.04, clamped) : 0.04)
-                    .stroke(.white, style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    .animation(.easeOut(duration: 0.35), value: clamped)
-
-                Circle()
-                    .fill(.white.opacity(0.06))
-                    .scaleEffect(pulse ? 1.0 : 0.82)
-                    .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true), value: pulse)
-
-                Image(systemName: "play.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.9))
-                    .offset(x: 1)
-                    .scaleEffect(pulse ? 1.06 : 0.94)
-                    .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true), value: pulse)
-            }
-            .frame(width: 68, height: 68)
-
-            VStack(spacing: 5) {
-                Text(stage.isEmpty ? "加载中…" : stage)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.9))
-
-                Text("\(Int(clamped * 100))%")
-                    .font(.system(size: 11, weight: .semibold))
-                    .monospacedDigit()
-                    .foregroundStyle(.white.opacity(0.45))
-            }
-        }
-        .padding(30)
-        .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 24))
-        .onAppear {
-            pulse = true
-            appeared = true
-        }
     }
 }

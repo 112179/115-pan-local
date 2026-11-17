@@ -160,6 +160,9 @@ struct FolderLevel: View {
     @State private var folders: [DirectFile] = []
     @State private var loading = false
     @State private var error: String?
+    @State private var showNewFolder = false
+    @State private var newFolderName = ""
+    @State private var creating = false
 
     var body: some View {
         List {
@@ -169,6 +172,22 @@ struct FolderLevel: View {
                 } label: {
                     Label("保存到「\(name)」", systemImage: "checkmark.circle")
                 }
+            }
+
+            Section {
+                Button {
+                    newFolderName = ""
+                    showNewFolder = true
+                } label: {
+                    HStack {
+                        Label("新建文件夹", systemImage: "folder.badge.plus")
+                        if creating {
+                            Spacer()
+                            ProgressView()
+                        }
+                    }
+                }
+                .disabled(creating)
             }
 
             Section {
@@ -194,6 +213,30 @@ struct FolderLevel: View {
             }
         }
         .task { await load() }
+        .alert("新建文件夹", isPresented: $showNewFolder) {
+            TextField("文件夹名称", text: $newFolderName)
+            Button("创建") { createFolder() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("在「\(name)」下创建")
+        }
+    }
+
+    private func createFolder() {
+        let trimmed = newFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        creating = true
+        Task {
+            do {
+                try await auth.api.mkdir(name: trimmed, pid: cid)
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                await load()
+                error = nil
+            } catch {
+                self.error = error.localizedDescription
+            }
+            creating = false
+        }
     }
 
     private func load() async {

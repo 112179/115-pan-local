@@ -3,7 +3,7 @@ name: Pan115Local
 options:
   bundleIdPrefix: com.minis
   deploymentTarget:
-    iOS: "18.0"
+    iOS: "17.0"
   createIntermediateGroups: true
   developmentLanguage: zh-Hans
 
@@ -18,15 +18,12 @@ packages:
   BigInt:
     url: https://github.com/attaswift/BigInt.git
     from: "5.3.0"
-  AetherEngine:
-    url: https://github.com/superuser404notfound/AetherEngine
-    from: "7.68.0"
 
 targets:
   Pan115Local:
     type: application
     platform: iOS
-    deploymentTarget: "18.0"
+    deploymentTarget: "17.0"
 
     sources:
       - path: Sources
@@ -35,8 +32,8 @@ targets:
     dependencies:
       - package: BigInt
         product: BigInt
-      - package: AetherEngine
-        product: AetherEngine
+      - framework: Vendor/MobileVLCKit-binary/MobileVLCKit.xcframework
+        embed: true
 
     info:
       path: Support/Info.plist
