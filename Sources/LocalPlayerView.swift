@@ -213,6 +213,7 @@ struct LocalPlayerView: View {
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
             savePosition()
+            session.player?.stopPlayback()
             PlayerOrientation.apply(.portrait, force: PlayerOrientation.isLandscape)
         }
     }

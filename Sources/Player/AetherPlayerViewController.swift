@@ -90,6 +90,8 @@ final class AetherPlayerViewController: UIViewController {
         view.addSubview(subtitleOverlay)
 
         if let engine {
+            // 离开播放页时真正停机并释放音频会话，避免关闭后仍在后台出声
+            engine.deactivatesAudioSessionOnStop = true
             engine.bind(view: surface)
             observe(engine)
         } else {
@@ -110,10 +112,22 @@ final class AetherPlayerViewController: UIViewController {
         subtitleOverlay.frame = view.bounds
     }
 
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        stopPlayback()
+    }
+
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         timer?.invalidate()
         timer = nil
+    }
+
+    /// 关闭播放页：真正停机、释放解码器和音频会话，避免退出后继续出声
+    func stopPlayback() {
+        guard let engine, engine.state != .idle else { return }
+        engine.stop(finalTeardown: true)
+        loadedURL = nil
     }
 
     private func activateAudioSession() {
