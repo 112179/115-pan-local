@@ -10,21 +10,11 @@ permissions:
 
 jobs:
   build:
-    runs-on: macos-15
-    timeout-minutes: 40
+    runs-on: xcode-27
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
-
-      - name: Fetch MobileVLCKit
-        run: |
-          mkdir -p Vendor
-          curl -sL --retry 3 -o /tmp/vlc.tar.xz "https://download.videolan.org/pub/cocoapods/prod/MobileVLCKit-3.7.5-a213fd11-6de05adc.tar.xz"
-          tar -xJf /tmp/vlc.tar.xz -C Vendor
-          rm -rf "Vendor/MobileVLCKit-binary/doc" "Vendor/MobileVLCKit-binary/Sample Code"
-          find Vendor/MobileVLCKit-binary -name "*.dSYM" -type d -prune -exec rm -rf {} +
-          du -sh Vendor/MobileVLCKit-binary/MobileVLCKit.xcframework
-          ls Vendor/MobileVLCKit-binary/MobileVLCKit.xcframework
 
       - name: Show toolchain
         run: |
@@ -38,7 +28,6 @@ jobs:
         run: |
           xcodegen generate
           xcodebuild -list -project Pan115Local.xcodeproj
-          grep -c "MPVKit" Pan115Local.xcodeproj/project.pbxproj || true
 
       - name: Resolve Swift packages
         run: |
@@ -64,15 +53,17 @@ jobs:
         if: failure()
         run: |
           echo "===== compile errors ====="
-          grep -nE "error:|warning: .*deprecated" build.log | head -n 60 || true
+          grep -nE "error:" build.log | head -n 80 || true
           echo "===== tail ====="
-          tail -n 120 build.log || true
+          tail -n 150 build.log || true
 
       - name: Package IPA
         run: |
           APP_PATH=$(find build/Build/Products/Release-iphoneos -maxdepth 1 -name "*.app" | head -n 1)
           if [ -z "$APP_PATH" ]; then echo "::error::找不到 .app，构建失败"; exit 1; fi
           echo "app = $APP_PATH"
+          du -sh "$APP_PATH"
+          ls "$APP_PATH/Frameworks" 2>/dev/null | head -30 || true
           rm -rf out && mkdir -p out/Payload
           cp -R "$APP_PATH" out/Payload/
           cd out
