@@ -188,6 +188,9 @@ struct LocalPlayerView: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
+        .sheet(isPresented: $showTracks) {
+            TrackPickerSheet(session: session)
+        }
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
             PlayerOrientation.allowAll()
@@ -267,7 +270,9 @@ struct LocalPlayerView: View {
 
             Spacer(minLength: 0)
 
-            Menu { trackMenu } label: {
+            Button {
+                showTracks = true
+            } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: 15, weight: .semibold))
                     .frame(width: 34, height: 34)
@@ -281,46 +286,6 @@ struct LocalPlayerView: View {
             LinearGradient(colors: [.black.opacity(0.85), .black.opacity(0.4), .clear],
                            startPoint: .top, endPoint: .bottom)
         )
-    }
-
-    @ViewBuilder
-    private var trackMenu: some View {
-        if !audioTracks.isEmpty {
-            Section("音轨") {
-                ForEach(audioTracks) { track in
-                    Button {
-                        session.player?.selectTrack(track)
-                    } label: {
-                        Label(track.displayName, systemImage: track.selected ? "checkmark" : "waveform")
-                    }
-                }
-            }
-        }
-
-        if !subTracks.isEmpty {
-            Section("字幕") {
-                Button {
-                    session.player?.disableSubtitles()
-                } label: {
-                    Label("关闭字幕", systemImage: "captions.bubble")
-                }
-                ForEach(subTracks) { track in
-                    Button {
-                        session.player?.selectTrack(track)
-                    } label: {
-                        Label(track.displayName, systemImage: track.selected ? "checkmark" : "captions.bubble")
-                    }
-                }
-            }
-        }
-
-        Section("画面") {
-            Button {
-                PlayerOrientation.toggle()
-            } label: {
-                Label(PlayerOrientation.isLandscape ? "竖屏" : "横屏", systemImage: "arrow.up.left.and.arrow.down.right")
-            }
-        }
     }
 
     private var bottomBar: some View {
@@ -527,14 +492,6 @@ struct LocalPlayerView: View {
         }
     }
 
-    private var audioTracks: [MPVTrack] {
-        session.tracks.filter { $0.type == "audio" }
-    }
-
-    private var subTracks: [MPVTrack] {
-        session.tracks.filter { $0.type == "sub" }
-    }
-
     private func resumeIfNeeded() {
         guard resumeEnabled else { return }
         let saved = UserDefaults.standard.double(forKey: "local.pos.\(pickcode)")
@@ -578,6 +535,105 @@ struct LocalPlayerView: View {
                 withAnimation(.easeInOut(duration: 0.2)) { showControls = false }
             }
         }
+    }
+}
+
+/// 音轨 / 字幕 / 画面选项面板。
+/// 之前用系统 Menu，字幕轨道多时菜单不可滚动，改为可滚动的 List sheet。
+struct TrackPickerSheet: View {
+    @ObservedObject var session: LocalSession
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var detent: PresentationDetent = .large
+
+    private var audioTracks: [MPVTrack] {
+        session.tracks.filter { $0.type == "audio" }
+    }
+
+    private var subTracks: [MPVTrack] {
+        session.tracks.filter { $0.type == "sub" }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if !audioTracks.isEmpty {
+                    Section("音轨") {
+                        ForEach(audioTracks) { track in
+                            Button {
+                                session.player?.selectTrack(track)
+                                dismiss()
+                            } label: {
+                                row(track.displayName,
+                                    selected: track.selected,
+                                    icon: "waveform")
+                            }
+                        }
+                    }
+                }
+
+                Section("字幕") {
+                    Button {
+                        session.player?.disableSubtitles()
+                        dismiss()
+                    } label: {
+                        row("关闭字幕",
+                            selected: subTracks.allSatisfy { !$0.selected },
+                            icon: "captions.bubble")
+                    }
+
+                    ForEach(subTracks) { track in
+                        Button {
+                            session.player?.selectTrack(track)
+                            dismiss()
+                        } label: {
+                            row(track.displayName,
+                                selected: track.selected,
+                                icon: "captions.bubble")
+                        }
+                    }
+
+                    if subTracks.isEmpty {
+                        Text("这个视频没有内嵌字幕")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                Section("画面") {
+                    Button {
+                        PlayerOrientation.toggle()
+                        dismiss()
+                    } label: {
+                        Label(PlayerOrientation.isLandscape ? "切换到竖屏" : "切换到横屏",
+                              systemImage: "arrow.up.left.and.arrow.down.right")
+                    }
+                }
+            }
+            .navigationTitle("播放选项")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large], selection: $detent)
+        .presentationDragIndicator(.visible)
+        .preferredColorScheme(.dark)
+    }
+
+    private func row(_ title: String, selected: Bool, icon: String) -> some View {
+        HStack {
+            Label(title, systemImage: icon)
+                .foregroundStyle(.primary)
+            Spacer(minLength: 8)
+            if selected {
+                Image(systemName: "checkmark")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(Color.accentColor)
+            }
+        }
+        .contentShape(Rectangle())
     }
 }
 
