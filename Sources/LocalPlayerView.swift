@@ -107,6 +107,7 @@ struct LocalPlayerView: View {
     @State private var dragTarget: Double?
     @State private var tapTask: Task<Void, Never>?
     @State private var boosting = false
+    @State private var showTracks = false
 
     @AppStorage("local.speed") private var savedSpeed: Double = 1.0
     @AppStorage("player.longPress") private var longPress = "speed2"
